@@ -15,6 +15,8 @@ public:
     void initBLE(const char* deviceName);
     void startAdvertising();
     void stopAdvertising();
+    void disconnect();
+    bool isConnected();
     void sendBattery(uint8_t batteryLevel);
     void sendSensorData(std::vector<DataPoint>& data);
     bool isAdvertising() const { return advertising; }

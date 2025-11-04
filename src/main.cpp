@@ -6,7 +6,6 @@
 #include <LSM6DS3.h>
 
 // Required original headers
-
 #include "Wire.h"
 #include "esp_wifi.h"
 #include "esp_sleep.h"
@@ -24,6 +23,10 @@
 
 #define DEBUG_MODE
 
+// ⭐ New LED definition
+#define LED_PIN 3 
+#define LED_BLINK_INTERVAL 500 // 500ms ON / 500ms OFF for blinking
+
 // --- Global Objects ---
 MAX17048 fuelGauge; 
 LSM6DS3Core myIMU(I2C_MODE, 0x6A);
@@ -32,6 +35,9 @@ BLEManager bleManager;
 // --- Global Variables ---
 bool isButtonPressed = false;
 unsigned long buttonPressTime = 0;
+// ⭐ New LED state variable
+unsigned long lastBlinkTime = 0; 
+int ledState = LOW; // Keeps track of the LED's current state for blinking
 
 // Data logging lists
 std::vector<DataPoint> listA, listB, listC;
@@ -42,11 +48,12 @@ uint8_t lastBatteryLevel = 0;
 // --- Function Prototypes ---
 void initI2C();
 uint8_t readBatteryPercentage();
+// ⭐ New function prototype
+void handleLEDStatus(); 
 
 // --- Functions ---
 void initI2C() {
     Wire.begin(I2C_SDA, I2C_SCL);
-    // Attach the Wire instance to the fuel gauge object
     fuelGauge.attach(Wire); 
 }
 
@@ -55,8 +62,37 @@ uint8_t readBatteryPercentage() {
     return fuelGauge.percent();
 }
 
+// ⭐ New function to control the LED state
+void handleLEDStatus() {
+    unsigned long currentTime = millis();
+    
+    // Check 1: Connected (Highest priority)
+    if (bleManager.isConnected()) {
+        digitalWrite(LED_PIN, HIGH);
+    } 
+    // Check 2: Advertising but NOT connected (Medium priority)
+    else if (bleManager.isAdvertising()) {
+        if (currentTime - lastBlinkTime >= LED_BLINK_INTERVAL) {
+            lastBlinkTime = currentTime;
+            ledState = !ledState; // Toggle state
+            digitalWrite(LED_PIN, ledState);
+        }
+    } 
+    // Check 3: Not advertising and not connected (Lowest priority - likely deep sleep pending)
+    else {
+        digitalWrite(LED_PIN, LOW);
+        ledState = LOW;
+    }
+}
+
+
 void setup() {
     Serial.begin(115200); // Initialize Serial to see printf output
+    
+    // ⭐ Initialize LED Pin
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW); // Start off
+    
     initI2C();
 
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
@@ -105,6 +141,8 @@ void loop() {
     static unsigned long lastSensorTime = 0;
     unsigned long currentTime = millis();
 
+    handleLEDStatus(); 
+
     // --- Handle button press ---
     if (digitalRead(BUTTON_PIN) == LOW) {
         if (!isButtonPressed) {
@@ -117,17 +155,16 @@ void loop() {
             #ifdef DEBUG_MODE
             printf("Entering Deep Sleep...\n");
             #endif
-            // Step 1: Enable wakeup for specific GPIO(s)
+            digitalWrite(LED_PIN, LOW); 
             gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL); 
-
-            // Step 2: Enable GPIO as a wakeup source
             esp_sleep_enable_gpio_wakeup();
+            esp_deep_sleep_start();
+            
         } else if (pressDuration >= SHORT_PRESS_TIME && bleManager.isAdvertising()) {
             #ifdef DEBUG_MODE
-            printf("Disconnecting BLE and stopping advertising...\n");
+            printf("Disconnecting BLE...\n");
             #endif
-            // Stop advertising via the BLEManager
-            bleManager.stopAdvertising();
+            bleManager.disconnect();
         }
     } else if (isButtonPressed) {
         unsigned long pressDuration = currentTime - buttonPressTime;
@@ -141,6 +178,7 @@ void loop() {
         isButtonPressed = false;
     }
 
+    // ... (Rest of your sensor/data processing logic remains here) ...
     // --- Sensor data processing every 10ms ---
     if (currentTime - lastSensorTime >= 10) {
         lastSensorTime = currentTime;
@@ -198,9 +236,6 @@ void loop() {
 
     // --- Check battery with debounce ---
     uint8_t newLevel = readBatteryPercentage();
-    // Only send notification if:
-    // 1. lastBatteryLevel is 255 (initial state) OR
-    // 2. The new level differs from the last sent level by 1% or more
     if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
       bleManager.sendBattery(newLevel);
       lastBatteryLevel = newLevel;

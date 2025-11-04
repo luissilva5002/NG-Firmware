@@ -32,7 +32,18 @@ void BLEManager::startAdvertising() {
 void BLEManager::stopAdvertising() {
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pServer->disconnect(pServer->getConnectedCount());
+    pAdvertising->stop();
     advertising = false;
+}
+
+void BLEManager::disconnect() {
+    if (pServer && pServer->getConnectedCount() > 0) {
+        pServer->disconnect(0);
+    }
+}
+
+bool BLEManager::isConnected() {
+    return pServer && (pServer->getConnectedCount() > 0);
 }
 
 void BLEManager::sendBattery(uint8_t batteryLevel) {
