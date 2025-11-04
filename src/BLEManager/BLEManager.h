@@ -14,6 +14,7 @@ public:
     BLEManager();
     void initBLE(const char* deviceName);
     void startAdvertising();
+    void stopAdvertising();
     void sendBattery(uint8_t batteryLevel);
     void sendSensorData(std::vector<DataPoint>& data);
     bool isAdvertising() const { return advertising; }

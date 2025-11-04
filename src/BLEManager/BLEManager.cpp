@@ -29,6 +29,12 @@ void BLEManager::startAdvertising() {
     advertising = true;
 }
 
+void BLEManager::stopAdvertising() {
+    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+    pServer->disconnect(pServer->getConnectedCount());
+    advertising = false;
+}
+
 void BLEManager::sendBattery(uint8_t batteryLevel) {
     if (pCharacteristic) {
         pCharacteristic->setValue(&batteryLevel, sizeof(batteryLevel));
@@ -53,7 +59,7 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
         data.erase(data.begin(), data.begin() + batchSize);
     }
 }
-
+  
 // ---------------- Server Callbacks ----------------
 void BLEManager::MyServerCallbacks::onConnect(BLEServer* pServer) {
     Serial.println("Device connected");
