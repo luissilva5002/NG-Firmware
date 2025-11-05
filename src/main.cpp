@@ -23,7 +23,6 @@
 
 #define DEBUG_MODE
 
-// ⭐ New LED definition
 #define LED_PIN 3 
 #define LED_BLINK_INTERVAL 500 // 500ms ON / 500ms OFF for blinking
 
@@ -35,9 +34,8 @@ BLEManager bleManager;
 // --- Global Variables ---
 bool isButtonPressed = false;
 unsigned long buttonPressTime = 0;
-// ⭐ New LED state variable
 unsigned long lastBlinkTime = 0; 
-int ledState = LOW; // Keeps track of the LED's current state for blinking
+int ledState = LOW;
 
 // Data logging lists
 std::vector<DataPoint> listA, listB, listC;
@@ -48,7 +46,6 @@ uint8_t lastBatteryLevel = 0;
 // --- Function Prototypes ---
 void initI2C();
 uint8_t readBatteryPercentage();
-// ⭐ New function prototype
 void handleLEDStatus(); 
 
 // --- Functions ---
@@ -62,7 +59,6 @@ uint8_t readBatteryPercentage() {
     return fuelGauge.percent();
 }
 
-// ⭐ New function to control the LED state
 void handleLEDStatus() {
     unsigned long currentTime = millis();
     
@@ -87,9 +83,7 @@ void handleLEDStatus() {
 
 
 void setup() {
-    Serial.begin(115200); // Initialize Serial to see printf output
     
-    // ⭐ Initialize LED Pin
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW); // Start off
     
@@ -178,8 +172,6 @@ void loop() {
         isButtonPressed = false;
     }
 
-    // ... (Rest of your sensor/data processing logic remains here) ...
-    // --- Sensor data processing every 10ms ---
     if (currentTime - lastSensorTime >= 10) {
         lastSensorTime = currentTime;
 
@@ -208,27 +200,26 @@ void loop() {
         } else {
             // Circular buffer for pre-trigger data (listA)
             if (listA.size() == 50){
-                // Check threshold condition (complex trigger logic)
-                bool triggerCondition1 = (dp.accel[0] < -1000 || dp.accel[0] > 1000) &&
-                                        (dp.accel[1] > 6000 || dp.accel[1] < -6000) &&
-                                        (dp.accel[2] > 150 || dp.accel[2] < -150);
-
-                bool triggerCondition2 = (dp.accel[0] > 1000) &&
-                                        (dp.accel[1] < -6000) &&
-                                        (dp.accel[2] < -150);
-                
-                if (triggerCondition1 || triggerCondition2) {
+              if(dp.accel[0] < -1000 | dp.accel[0] > 1000 ){
+                if(dp.accel[1] > 6000 | dp.accel[1] < -6000){
+                  if(dp.accel[2] > 150 | dp.accel[2] < -150){
                     isThresholdDetected = true;
+                  }
                 }
-                
-                // Remove oldest element from the front of the circular buffer
-                listA.erase(listA.begin());
+              //ToDo: Not accurate  
+              } else if (dp.accel[0] > 1000){
+                if(dp.accel[1] < -6000){
+                  if(dp.accel[2] < -150){
+                    isThresholdDetected = true;
+                  }
+                }
+              }
+              listA.erase(listA.begin());
+              
             }
-            // Add new data point to the back of the circular buffer
             listA.push_back(dp);
 
             #ifdef DEBUG_MODE
-            // Using printf with %d (or %hi) format specifiers for int16_t values
             printf("%d, %d, %d\n", dp.accel[0], dp.accel[1], dp.accel[2]);
             #endif 
         }
