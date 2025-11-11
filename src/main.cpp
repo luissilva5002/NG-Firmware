@@ -12,7 +12,7 @@
 #include "driver/rtc_io.h"
 
 // Custom headers
-#include "BLEManager/BLEManager.h" // Your provided BLE wrapper
+#include "BLEManager/BLEManager.h"
 
 // --- Constants ---
 #define BUTTON_PIN 0
@@ -25,7 +25,7 @@
 #define DEBUG_MODE
 
 #define LED_PIN 3 
-#define LED_BLINK_INTERVAL 500 // 500ms ON / 500ms OFF for blinking
+#define LED_BLINK_INTERVAL 500
 
 // --- Global Objects ---
 MAX17048 fuelGauge; 
@@ -86,18 +86,12 @@ void handleLEDStatus() {
 void setup() {
     
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW); // Start off
+    digitalWrite(LED_PIN, LOW);
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     gpio_hold_dis((gpio_num_t)BUTTON_PIN);
     
     initI2C();
-
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
-        #ifdef DEBUG_MODE
-        printf("Woke up from deep sleep.\n");
-        #endif
-    }
 
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
         #ifdef DEBUG_MODE
@@ -213,8 +207,8 @@ void loop() {
 
         if (isThresholdDetected) {
             listB.push_back(dp);
-            if (listB.size() == 50) {
-                // Combine listA (pre-trigger) and listB (post-trigger) into listC
+            if (listB.size() == 50) 
+            {    
                 listC = listA;
                 listC.insert(listC.end(), listB.begin(), listB.end());
                 
@@ -222,7 +216,6 @@ void loop() {
                 listA.clear();
                 listB.clear();
                 
-                // Send combined data
                 bleManager.sendSensorData(listC);
                 listC.clear();
             }
