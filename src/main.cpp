@@ -9,6 +9,7 @@
 #include "Wire.h"
 #include "esp_wifi.h"
 #include "esp_sleep.h"
+#include "driver/rtc_io.h"
 
 // Custom headers
 #include "BLEManager/BLEManager.h" // Your provided BLE wrapper
@@ -86,6 +87,9 @@ void setup() {
     
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW); // Start off
+
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    gpio_hold_dis((gpio_num_t)BUTTON_PIN);
     
     initI2C();
 
@@ -95,6 +99,16 @@ void setup() {
         #endif
     }
 
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
+        #ifdef DEBUG_MODE
+        printf("Woke up from deep sleep.\n");
+        #endif
+    }
+
+    // Configure button as wake-up source for next sleep
+    gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+
     setCpuFrequencyMhz(80);
     esp_wifi_stop();
     btStop();
@@ -102,8 +116,7 @@ void setup() {
     // Initialize BLE using the BLEManager
     bleManager.initBLE("ESP32_BT");
     bleManager.startAdvertising();
-    
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
     delay(1000);
 
     // Initial check for IMU
@@ -139,21 +152,37 @@ void loop() {
 
     // --- Handle button press ---
     if (digitalRead(BUTTON_PIN) == LOW) {
+
         if (!isButtonPressed) {
             isButtonPressed = true;
             buttonPressTime = currentTime;
         }
 
         unsigned long pressDuration = currentTime - buttonPressTime;
+
         if (pressDuration >= LONG_PRESS_TIME) {
             #ifdef DEBUG_MODE
-            printf("Entering Deep Sleep...\n");
+            printf("Long press detected. Waiting for button release...\n");
             #endif
-            digitalWrite(LED_PIN, LOW); 
-            gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL); 
-            esp_sleep_enable_gpio_wakeup();
+
+            // Wait until button is released
+            while (digitalRead(BUTTON_PIN) == LOW) {
+                delay(10);  // debounce / polling delay
+            }
+
+            #ifdef DEBUG_MODE
+            printf("Button released. Entering Deep Sleep...\n");
+            #endif
+
+            digitalWrite(LED_PIN, LOW);
+
+            // --- Prepare for deep sleep ---
+            pinMode(BUTTON_PIN, INPUT_PULLUP);  // ensure pull-up is active
+            gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+            esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+            gpio_hold_dis((gpio_num_t)BUTTON_PIN);  // ensure pin not frozen
             esp_deep_sleep_start();
-            
+
         } else if (pressDuration >= SHORT_PRESS_TIME && bleManager.isAdvertising()) {
             #ifdef DEBUG_MODE
             printf("Disconnecting BLE...\n");
