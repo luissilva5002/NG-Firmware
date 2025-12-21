@@ -71,7 +71,6 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
     }
 }
   
-// ---------------- Server Callbacks ----------------
 void BLEManager::MyServerCallbacks::onConnect(BLEServer* pServer) {
     Serial.println("Device connected");
 }

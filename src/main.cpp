@@ -1,20 +1,19 @@
 #include <Arduino.h>
 #include <vector>
-#include <algorithm> 
+#include <algorithm>
 
-#include <MAX17048.h> 
+#include <MAX17048.h>
 #include <LSM6DS3.h>
 
-// Required original headers
 #include "Wire.h"
 #include "esp_wifi.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 
-// Custom headers
 #include "BLEManager/BLEManager.h"
 
-// --- Constants ---
+// ================= CONSTANTS =================
+
 #define BUTTON_PIN 0
 #define SHORT_PRESS_TIME 2000
 #define LONG_PRESS_TIME 5000
@@ -22,84 +21,95 @@
 #define I2C_SDA 4
 #define I2C_SCL 5
 
-#define DEBUG_MODE
-
-#define LED_PIN 3 
+#define LED_PIN 3
 #define LED_BLINK_INTERVAL 500
 
-// --- Global Objects ---
-MAX17048 fuelGauge; 
+#define DEBUG_MODE 0
+
+#define PRE_BUF_SIZE    800
+#define POST_BUF_SIZE   600
+
+#define OMEGA_IMPACT_MIN      400000000L   // Minimum ω² peak to confirm impact
+
+// ================= GLOBAL OBJECTS =================
+
+MAX17048 fuelGauge;
 LSM6DS3Core myIMU(I2C_MODE, 0x6A);
 BLEManager bleManager;
 
-// --- Global Variables ---
+// ================= GLOBAL VARIABLES =================
+
 bool isButtonPressed = false;
 unsigned long buttonPressTime = 0;
-unsigned long lastBlinkTime = 0; 
+unsigned long lastBlinkTime = 0;
 int ledState = LOW;
-
-// Data logging lists
-std::vector<DataPoint> listA, listB, listC;
-bool isThresholdDetected = false;
 
 uint8_t lastBatteryLevel = 0;
 
-// --- Function Prototypes ---
+// --- IMU Buffers ---
+DataPoint preBuf[PRE_BUF_SIZE];
+DataPoint postBuf[POST_BUF_SIZE];
+
+uint16_t preIdx = 0;
+uint16_t postIdx = 0;
+
+// --- Logic Control ---
+bool capturingPost = false; // Replaces the State Machine
+int32_t omega2_prev = 0;
+int32_t dOmega2_prev = 0;
+uint16_t impactPreIdx = 0;
+
+// ================= FUNCTION PROTOTYPES =================
+
 void initI2C();
 uint8_t readBatteryPercentage();
-void handleLEDStatus(); 
+void handleLEDStatus();
 
-// --- Functions ---
+// ================= FUNCTIONS =================
+
 void initI2C() {
     Wire.begin(I2C_SDA, I2C_SCL);
-    fuelGauge.attach(Wire); 
+    Wire.setClock(400000); // 400kHz Fast Mode
+    fuelGauge.attach(Wire);
 }
 
 uint8_t readBatteryPercentage() {
-    // Use the percent() method from the MAX17048 library
     return fuelGauge.percent();
 }
 
 void handleLEDStatus() {
     unsigned long currentTime = millis();
-    
-    // Check 1: Connected (Highest priority)
+
     if (bleManager.isConnected()) {
         digitalWrite(LED_PIN, HIGH);
-    } 
-    // Check 2: Advertising but NOT connected (Medium priority)
+    }
     else if (bleManager.isAdvertising()) {
         if (currentTime - lastBlinkTime >= LED_BLINK_INTERVAL) {
             lastBlinkTime = currentTime;
-            ledState = !ledState; // Toggle state
+            ledState = !ledState;
             digitalWrite(LED_PIN, ledState);
         }
-    } 
-    // Check 3: Not advertising and not connected (Lowest priority - likely deep sleep pending)
+    }
     else {
         digitalWrite(LED_PIN, LOW);
         ledState = LOW;
     }
 }
 
+// ================= SETUP =================
 
 void setup() {
-    
+    Serial.begin(115200);
+    delay(1000); 
+
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     gpio_hold_dis((gpio_num_t)BUTTON_PIN);
-    
+
     initI2C();
 
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
-        #ifdef DEBUG_MODE
-        printf("Woke up from deep sleep.\n");
-        #endif
-    }
-
-    // Configure button as wake-up source for next sleep
     gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
     esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
 
@@ -107,150 +117,140 @@ void setup() {
     esp_wifi_stop();
     btStop();
 
-    // Initialize BLE using the BLEManager
     bleManager.initBLE("ESP32_BT");
     bleManager.startAdvertising();
 
-    delay(1000);
+    delay(500);
 
-    // Initial check for IMU
     if (myIMU.beginCore() != 0) {
         #ifdef DEBUG_MODE
-        printf("Error at beginCore().\n");
-        #endif
-    } else {
-        #ifdef DEBUG_MODE
-        printf("beginCore() passed.\n");
+            printf("IMU init error\n");
         #endif
     }
 
-    // Configure IMU registers
+    // Set Sensor to 833Hz
     myIMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL,
-        LSM6DS3_ACC_GYRO_BW_XL_100Hz |
         LSM6DS3_ACC_GYRO_FS_XL_16g | 
-        LSM6DS3_ACC_GYRO_ODR_XL_104Hz);
+        LSM6DS3_ACC_GYRO_ODR_XL_833Hz); 
 
     myIMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL2_G,
-        LSM6DS3_ACC_GYRO_FS_G_2000dps |
-        LSM6DS3_ACC_GYRO_ODR_G_104Hz);
+        LSM6DS3_ACC_GYRO_FS_G_2000dps | 
+        LSM6DS3_ACC_GYRO_ODR_G_833Hz);
 
-    // Read initial battery level
-    lastBatteryLevel = readBatteryPercentage(); 
+    lastBatteryLevel = readBatteryPercentage();
+    
+    #ifdef DEBUG_MODE
+        printf("Setup Complete. 833Hz Cyclic Buffer Mode.\n");
+    #endif
 }
 
+// ================= LOOP =================
+
 void loop() {
-    static unsigned long lastSensorTime = 0;
-    unsigned long currentTime = millis();
+    // 833Hz Timer
+    static unsigned long lastMicros = 0;
+    unsigned long currentMicros = micros();
+    unsigned long currentTime = millis(); // For UI logic
 
-    handleLEDStatus(); 
+    handleLEDStatus();
 
-    // --- Handle button press ---
+    // -------- BUTTON HANDLING --------
     if (digitalRead(BUTTON_PIN) == LOW) {
-
         if (!isButtonPressed) {
             isButtonPressed = true;
             buttonPressTime = currentTime;
         }
-
         unsigned long pressDuration = currentTime - buttonPressTime;
-
         if (pressDuration >= LONG_PRESS_TIME) {
-            #ifdef DEBUG_MODE
-            printf("Long press detected. Waiting for button release...\n");
-            #endif
-
-            // Wait until button is released
-            while (digitalRead(BUTTON_PIN) == LOW) {
-                delay(10);  // debounce / polling delay
-            }
-
-            #ifdef DEBUG_MODE
-            printf("Button released. Entering Deep Sleep...\n");
-            #endif
-
+            while (digitalRead(BUTTON_PIN) == LOW) delay(10);
             digitalWrite(LED_PIN, LOW);
-
-            // --- Prepare for deep sleep ---
-            pinMode(BUTTON_PIN, INPUT_PULLUP);  // ensure pull-up is active
-            gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
-            esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-            gpio_hold_dis((gpio_num_t)BUTTON_PIN);  // ensure pin not frozen
             esp_deep_sleep_start();
-
-        } else if (pressDuration >= SHORT_PRESS_TIME && bleManager.isAdvertising()) {
-            #ifdef DEBUG_MODE
-            printf("Disconnecting BLE...\n");
-            #endif
+        }
+        else if (pressDuration >= SHORT_PRESS_TIME && bleManager.isAdvertising()) {
             bleManager.disconnect();
         }
-    } else if (isButtonPressed) {
-        unsigned long pressDuration = currentTime - buttonPressTime;
-        if (pressDuration < LONG_PRESS_TIME) {
-            // Short press (or press released before LONG_PRESS_TIME)
-            #ifdef DEBUG_MODE
-            printf("Restarting BLE advertising...\n");
-            #endif
-            bleManager.startAdvertising();
-        }
+    }
+    else if (isButtonPressed) {
+        bleManager.startAdvertising();
         isButtonPressed = false;
     }
 
-    if (currentTime - lastSensorTime >= 10) {
-        lastSensorTime = currentTime;
+    // -------- IMU SAMPLING (833 Hz) --------
+    if (currentMicros - lastMicros >= 1200) { 
+        lastMicros = currentMicros;
 
         DataPoint dp;
+        // Read raw data
         for (int i = 0; i < 3; i++) {
-            // Read Accelerometer and Gyro data
             myIMU.readRegisterInt16(&dp.accel[i], LSM6DS3_ACC_GYRO_OUTX_L_XL + 2 * i);
-            myIMU.readRegisterInt16(&dp.gyro[i], LSM6DS3_ACC_GYRO_OUTX_L_G + 2 * i);
+            myIMU.readRegisterInt16(&dp.gyro[i],  LSM6DS3_ACC_GYRO_OUTX_L_G  + 2 * i);
         }
 
-        if (isThresholdDetected) {
-            listB.push_back(dp);
-            if (listB.size() == 50) 
-            {    
-                listC = listA;
-                listC.insert(listC.end(), listB.begin(), listB.end());
-                
-                isThresholdDetected = false;
-                listA.clear();
-                listB.clear();
-                
-                bleManager.sendSensorData(listC);
-                listC.clear();
-            }
-        } else {
-            // Circular buffer for pre-trigger data (listA)
-            if (listA.size() == 50){
-              if(dp.accel[0] < -1000 | dp.accel[0] > 1000 ){
-                if(dp.accel[1] > 6000 | dp.accel[1] < -6000){
-                  if(dp.accel[2] > 150 | dp.accel[2] < -150){
-                    isThresholdDetected = true;
-                  }
-                }
-              //ToDo: Not accurate  
-              } else if (dp.accel[0] > 1000){
-                if(dp.accel[1] < -6000){
-                  if(dp.accel[2] < -150){
-                    isThresholdDetected = true;
-                  }
-                }
-              }
-              listA.erase(listA.begin());
-              
-            }
-            listA.push_back(dp);
+        // --- Calc Energy & Derivative ---
+        // Using int64_t for calculation to prevent overflow with high thresholds
+        int64_t wx = dp.gyro[0];
+        int64_t wy = dp.gyro[1];
+        int64_t wz = dp.gyro[2];
 
-            #ifdef DEBUG_MODE
-            printf("%d, %d, %d\n", dp.accel[0], dp.accel[1], dp.accel[2]);
-            #endif 
+        int64_t omega2_64 = (wx*wx) + (wy*wy) + (wz*wz);
+        int32_t omega2 = (int32_t)omega2_64; // Cast back to int32 for comparison/storage
+        int32_t dOmega2 = omega2 - omega2_prev;
+
+        #ifdef DEBUG_MODE
+            printf("%ld,%ld\n", omega2, dOmega2); // Uncomment for Serial Plotter
+        #endif
+        
+        if (capturingPost) {
+            postBuf[postIdx++] = dp;
+
+            if (postIdx >= POST_BUF_SIZE) {
+                #ifdef DEBUG_MODE
+                    printf(">> Post Buffer Full. Sending data...\n");
+                #endif
+
+                std::vector<DataPoint> impactFrame;
+                impactFrame.reserve(PRE_BUF_SIZE + POST_BUF_SIZE);
+
+                for (int i = 0; i < PRE_BUF_SIZE; i++) {
+                    uint16_t idx = (impactPreIdx + i) % PRE_BUF_SIZE;
+                    impactFrame.push_back(preBuf[idx]);
+                }
+
+                for (int i = 0; i < POST_BUF_SIZE; i++) {
+                    impactFrame.push_back(postBuf[i]);
+                }
+
+                bleManager.sendSensorData(impactFrame);
+                
+                capturingPost = false;
+                postIdx = 0;
+                printf(">> Data Sent. Resuming monitoring.\n");
+            }
+        } 
+        else {
+            preBuf[preIdx] = dp;
+            
+            if (dOmega2_prev > 0 && dOmega2 < 0 && omega2 > OMEGA_IMPACT_MIN) {
+                
+                #ifdef DEBUG_MODE
+                    printf(">> IMPACT TRIGGERED! Peak: %ld\n", omega2);
+                #endif
+
+                capturingPost = true;
+                impactPreIdx = (preIdx + 1) % PRE_BUF_SIZE; // The next index would have been the oldest
+                postIdx = 0;
+            }
+
+            preIdx = (preIdx + 1) % PRE_BUF_SIZE;
         }
+
+        omega2_prev = omega2;
+        dOmega2_prev = dOmega2;
     }
 
-    // --- Check battery with debounce ---
     uint8_t newLevel = readBatteryPercentage();
     if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
-      bleManager.sendBattery(newLevel);
-      lastBatteryLevel = newLevel;
+        bleManager.sendBattery(newLevel);
+        lastBatteryLevel = newLevel;
     }
 }
