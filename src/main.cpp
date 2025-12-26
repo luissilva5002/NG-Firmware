@@ -22,7 +22,7 @@
 #define I2C_SDA 4
 #define I2C_SCL 5
 
-#define DEBUG_MODE
+#define DEBUG_MODE 1
 
 #define LED_PIN 3 
 #define LED_BLINK_INTERVAL 500
@@ -88,7 +88,6 @@ void handleLEDStatus() {
 
 
 void setup() {
-    Serial.begin(115200); // Ensure Serial is started for Debug
     
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
@@ -190,84 +189,85 @@ void loop() {
         isButtonPressed = false;
     }
 
-    // --- High Speed Sampling Loop (833Hz) ---
-    if (currentMicros - lastMicros >= 1200) {
-        lastMicros = currentMicros;
+    if (bleManager.isConnected() && bleManager.isSamplingEnabled()) {
+        if (currentMicros - lastMicros >= 1200) {
+            lastMicros = currentMicros;
 
-        DataPoint dp;
-        for (int i = 0; i < 3; i++) {
-            myIMU.readRegisterInt16(&dp.accel[i], LSM6DS3_ACC_GYRO_OUTX_L_XL + 2 * i);
-            myIMU.readRegisterInt16(&dp.gyro[i], LSM6DS3_ACC_GYRO_OUTX_L_G + 2 * i);
+            DataPoint dp;
+            for (int i = 0; i < 3; i++) {
+                myIMU.readRegisterInt16(&dp.accel[i], LSM6DS3_ACC_GYRO_OUTX_L_XL + 2 * i);
+                myIMU.readRegisterInt16(&dp.gyro[i], LSM6DS3_ACC_GYRO_OUTX_L_G + 2 * i);
+            }
+
+            if (isThresholdDetected) {
+                // --- PHASE 2: Post-Trigger Recording ---
+                listB.push_back(dp);
+                
+                // Wait for 400 samples (approx 0.5 seconds)
+                if (listB.size() >= BUFFER_LIMIT) 
+                {    
+                    #ifdef DEBUG_MODE
+                    printf("Captured Impact! Sending %d samples...\n", listA.size() + listB.size());
+                    #endif
+
+                    // Combine buffers
+                    listC = listA;
+                    listC.insert(listC.end(), listB.begin(), listB.end());
+                    
+                    // Send via BLE
+                    bleManager.sendSensorData(listC);
+                    
+                    // Reset
+                    isThresholdDetected = false;
+                    listA.clear();
+                    listB.clear();
+                    listC.clear();
+                    
+                    // Re-reserve memory just in case
+                    listA.reserve(BUFFER_LIMIT + 10);
+                    listB.reserve(BUFFER_LIMIT + 10);
+                }
+            } else {
+                // --- PHASE 1: Pre-Trigger Monitoring ---
+                
+                // Maintain circular buffer size
+                if (listA.size() >= BUFFER_LIMIT){
+                // --- YOUR THRESHOLD LOGIC (Preserved) ---
+                // Fixed '|' to '||' for correct C++ logical OR
+                
+                if(dp.accel[0] < -1000 || dp.accel[0] > 1000 ){
+                    if(dp.accel[1] > 6000 || dp.accel[1] < -6000){
+                    if(dp.accel[2] > 150 || dp.accel[2] < -150){
+                        isThresholdDetected = true;
+                        #ifdef DEBUG_MODE
+                        printf(">> Threshold Triggered!\n");
+                        #endif
+                    }
+                    }
+                } else if (dp.accel[0] > 1000){
+                    if(dp.accel[1] < -6000){
+                    if(dp.accel[2] < -150){
+                        isThresholdDetected = true;
+                        #ifdef DEBUG_MODE
+                        printf(">> Threshold Triggered (Cond 2)!\n");
+                        #endif
+                    }
+                    }
+                }
+                
+                // Remove oldest sample to keep buffer rolling
+                listA.erase(listA.begin());
+                }
+                
+                listA.push_back(dp);
+            }
         }
 
-        if (isThresholdDetected) {
-            // --- PHASE 2: Post-Trigger Recording ---
-            listB.push_back(dp);
-            
-            // Wait for 400 samples (approx 0.5 seconds)
-            if (listB.size() >= BUFFER_LIMIT) 
-            {    
-                #ifdef DEBUG_MODE
-                printf("Captured Impact! Sending %d samples...\n", listA.size() + listB.size());
-                #endif
-
-                // Combine buffers
-                listC = listA;
-                listC.insert(listC.end(), listB.begin(), listB.end());
-                
-                // Send via BLE
-                bleManager.sendSensorData(listC);
-                
-                // Reset
-                isThresholdDetected = false;
-                listA.clear();
-                listB.clear();
-                listC.clear();
-                
-                // Re-reserve memory just in case
-                listA.reserve(BUFFER_LIMIT + 10);
-                listB.reserve(BUFFER_LIMIT + 10);
-            }
-        } else {
-            // --- PHASE 1: Pre-Trigger Monitoring ---
-            
-            // Maintain circular buffer size
-            if (listA.size() >= BUFFER_LIMIT){
-              // --- YOUR THRESHOLD LOGIC (Preserved) ---
-              // Fixed '|' to '||' for correct C++ logical OR
-              
-              if(dp.accel[0] < -1000 || dp.accel[0] > 1000 ){
-                if(dp.accel[1] > 6000 || dp.accel[1] < -6000){
-                  if(dp.accel[2] > 150 || dp.accel[2] < -150){
-                    isThresholdDetected = true;
-                    #ifdef DEBUG_MODE
-                    printf(">> Threshold Triggered!\n");
-                    #endif
-                  }
-                }
-              } else if (dp.accel[0] > 1000){
-                if(dp.accel[1] < -6000){
-                  if(dp.accel[2] < -150){
-                    isThresholdDetected = true;
-                    #ifdef DEBUG_MODE
-                    printf(">> Threshold Triggered (Cond 2)!\n");
-                    #endif
-                  }
-                }
-              }
-              
-              // Remove oldest sample to keep buffer rolling
-              listA.erase(listA.begin());
-            }
-            
-            listA.push_back(dp);
+        // --- Check battery ---
+        uint8_t newLevel = readBatteryPercentage();
+        if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
+        bleManager.sendBattery(newLevel);
+        lastBatteryLevel = newLevel;
         }
-    }
-
-    // --- Check battery ---
-    uint8_t newLevel = readBatteryPercentage();
-    if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
-      bleManager.sendBattery(newLevel);
-      lastBatteryLevel = newLevel;
     }
 }

@@ -17,8 +17,10 @@ void BLEManager::initBLE(const char* deviceName) {
         BLECharacteristic::PROPERTY_NOTIFY
     );
     pCharacteristic->setValue("Hello World");
-    pService->start();
 
+    pCharacteristic->setCallbacks(new MyCallbacks(this));
+
+    pService->start();
     startAdvertising();
 }
 
@@ -68,6 +70,22 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
         pCharacteristic->setValue((uint8_t*)batch.data(), batch.size() * sizeof(int16_t));
         pCharacteristic->notify();
         data.erase(data.begin(), data.begin() + batchSize);
+    }
+}
+
+void BLEManager::MyCallbacks::onWrite(BLECharacteristic* pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    
+    if (value.length() > 0) {
+        // Check for specific commands
+        if (value == "START") {
+            pManager->setSamplingEnabled(true);
+            Serial.println(">> Handshake Received: Sampling STARTED");
+        } 
+        else if (value == "STOP") {
+            pManager->setSamplingEnabled(false);
+            Serial.println(">> Handshake Received: Sampling STOPPED");
+        }
     }
 }
   
