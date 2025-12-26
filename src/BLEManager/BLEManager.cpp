@@ -3,6 +3,7 @@
 BLEManager::BLEManager() : pServer(nullptr), pService(nullptr), pCharacteristic(nullptr), advertising(true) {}
 
 void BLEManager::initBLE(const char* deviceName) {
+    printf("initble...\n");
     BLEDevice::init(deviceName);
     BLEDevice::setMTU(256);
 
@@ -25,6 +26,7 @@ void BLEManager::initBLE(const char* deviceName) {
 }
 
 void BLEManager::startAdvertising() {
+    printf("advertising...\n");
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(pService->getUUID());
     pAdvertising->start();
@@ -32,6 +34,7 @@ void BLEManager::startAdvertising() {
 }
 
 void BLEManager::stopAdvertising() {
+    printf("stopping advertising...\n");
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pServer->disconnect(pServer->getConnectedCount());
     pAdvertising->stop();
@@ -56,6 +59,7 @@ void BLEManager::sendBattery(uint8_t batteryLevel) {
 }
 
 void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
+    printf("sending sensor data...\n");
     if (!pCharacteristic) return;
 
     while (!data.empty()) {
@@ -77,24 +81,29 @@ void BLEManager::MyCallbacks::onWrite(BLECharacteristic* pCharacteristic) {
     std::string value = pCharacteristic->getValue();
     
     if (value.length() > 0) {
-        // Check for specific commands
-        if (value == "START") {
+        printf(">> BLE Received %d bytes: ", value.length());
+        
+        // 🟢 FIX: Use 'find' to detect command even if there are null terminators
+        if (value.find("START") != std::string::npos) {
             pManager->setSamplingEnabled(true);
-            Serial.println(">> Handshake Received: Sampling STARTED");
+            printf("START Command Accepted\n");
         } 
-        else if (value == "STOP") {
+        else if (value.find("STOP") != std::string::npos) {
             pManager->setSamplingEnabled(false);
-            Serial.println(">> Handshake Received: Sampling STOPPED");
+            printf("STOP Command Accepted\n");
+        }
+        else {
+             printf("Unknown Command\n");
         }
     }
 }
   
 // ---------------- Server Callbacks ----------------
 void BLEManager::MyServerCallbacks::onConnect(BLEServer* pServer) {
-    Serial.println("Device connected");
+    printf("Device connected");
 }
 
 void BLEManager::MyServerCallbacks::onDisconnect(BLEServer* pServer) {
-    Serial.println("Device disconnected");
+    printf("Device disconnected");
     pServer->startAdvertising();
 }
