@@ -100,10 +100,10 @@ void BLEManager::MyCallbacks::onWrite(BLECharacteristic* pCharacteristic) {
   
 // ---------------- Server Callbacks ----------------
 void BLEManager::MyServerCallbacks::onConnect(BLEServer* pServer) {
-    printf("Device connected");
+    printf("Device connected\n");
 }
 
 void BLEManager::MyServerCallbacks::onDisconnect(BLEServer* pServer) {
-    printf("Device disconnected");
+    printf("Device disconnected\n");
     pServer->startAdvertising();
 }
