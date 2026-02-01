@@ -1,44 +1,54 @@
 #include "BLEManager.h"
 
-BLEManager::BLEManager() : pServer(nullptr), pService(nullptr), pCharacteristic(nullptr), advertising(true) {}
+BLEManager::BLEManager() : 
+    pServer(nullptr), 
+    pService(nullptr), 
+    pCharacteristic(nullptr), 
+    _advertising(false),
+    _samplingEnabled(false),
+    _otaRequested(false) 
+{}
 
 void BLEManager::initBLE(const char* deviceName) {
-    printf("initble...\n");
-    BLEDevice::init(deviceName);
-    BLEDevice::setMTU(256);
+    NimBLEDevice::init(deviceName);
+    NimBLEDevice::setMTU(256); // Optimized for larger data packets
 
-    pServer = BLEDevice::createServer();
+    pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
     pService = pServer->createService("A8922A2A-6FA5-4C36-83A2-8016AEB7865B");
+    
     pCharacteristic = pService->createCharacteristic(
         "9CCCEF3B-6AAB-43EA-B9E6-F7D5B461792E",
-        BLECharacteristic::PROPERTY_READ |
-        BLECharacteristic::PROPERTY_WRITE |
-        BLECharacteristic::PROPERTY_NOTIFY
+        NIMBLE_PROPERTY::READ |
+        NIMBLE_PROPERTY::WRITE |
+        NIMBLE_PROPERTY::NOTIFY
     );
+    
+    // Use setValue to set initial data
     pCharacteristic->setValue("Hello World");
-
-    pCharacteristic->setCallbacks(new MyCallbacks(this));
-
+    pCharacteristic->setCallbacks(new MyCallbacks(this)); // Attach Write Callback
+    
     pService->start();
+
     startAdvertising();
 }
 
 void BLEManager::startAdvertising() {
-    printf("advertising...\n");
-    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(pService->getUUID());
     pAdvertising->start();
-    advertising = true;
+    _advertising = true;
 }
 
 void BLEManager::stopAdvertising() {
-    printf("stopping advertising...\n");
-    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
-    pServer->disconnect(pServer->getConnectedCount());
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    if (pServer->getConnectedCount() > 0) {
+        // Forcing disconnect:
+        pServer->disconnect(0); 
+    }
     pAdvertising->stop();
-    advertising = false;
+    _advertising = false;
 }
 
 void BLEManager::disconnect() {
@@ -52,19 +62,20 @@ bool BLEManager::isConnected() {
 }
 
 void BLEManager::sendBattery(uint8_t batteryLevel) {
-    if (pCharacteristic) {
+    if (pCharacteristic && isConnected()) {
         pCharacteristic->setValue(&batteryLevel, sizeof(batteryLevel));
         pCharacteristic->notify();
     }
 }
 
 void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
-    printf("sending sensor data...\n");
-    if (!pCharacteristic) return;
+    if (!pCharacteristic || !isConnected()) return;
 
+    // Batching logic preserved
     while (!data.empty()) {
-        size_t batchSize = std::min(data.size(), size_t(20));
+        size_t batchSize = std::min(data.size(), size_t(20)); // Adjust based on MTU 256
         std::vector<int16_t> batch;
+        batch.reserve(batchSize * 6);
 
         for (size_t i = 0; i < batchSize; i++) {
             batch.insert(batch.end(), std::begin(data[i].accel), std::end(data[i].accel));
@@ -76,34 +87,33 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
         data.erase(data.begin(), data.begin() + batchSize);
     }
 }
-
-void BLEManager::MyCallbacks::onWrite(BLECharacteristic* pCharacteristic) {
-    std::string value = pCharacteristic->getValue();
-    
-    if (value.length() > 0) {
-        printf(">> BLE Received %d bytes: ", value.length());
-        
-        // 🟢 FIX: Use 'find' to detect command even if there are null terminators
-        if (value.find("START") != std::string::npos) {
-            pManager->setSamplingEnabled(true);
-            printf("START Command Accepted\n");
-        } 
-        else if (value.find("STOP") != std::string::npos) {
-            pManager->setSamplingEnabled(false);
-            printf("STOP Command Accepted\n");
-        }
-        else {
-             printf("Unknown Command\n");
-        }
-    }
-}
   
 // ---------------- Server Callbacks ----------------
-void BLEManager::MyServerCallbacks::onConnect(BLEServer* pServer) {
+void BLEManager::MyServerCallbacks::onConnect(NimBLEServer* pServer) {
     printf("Device connected\n");
 }
 
-void BLEManager::MyServerCallbacks::onDisconnect(BLEServer* pServer) {
+void BLEManager::MyServerCallbacks::onDisconnect(NimBLEServer* pServer) {
     printf("Device disconnected\n");
-    pServer->startAdvertising();
+    NimBLEDevice::startAdvertising(); // Auto-restart advertising
+}
+
+// ---------------- Characteristic Callbacks (Command Logic) ----------------
+void BLEManager::MyCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    
+    if (value.length() > 0) {
+        if (value.find("START") != std::string::npos) {
+            pManager->setSamplingEnabled(true);
+            printf("Command: START Sampling\n");
+        } 
+        else if (value.find("STOP") != std::string::npos) {
+            pManager->setSamplingEnabled(false);
+            printf("Command: STOP Sampling\n");
+        }
+        else if (value.find("OTA_UP") != std::string::npos) {
+            pManager->setOtaRequested(true);
+            printf("Command: OTA Requested\n");
+        }
+    }
 }

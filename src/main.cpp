@@ -8,7 +8,10 @@
 #include "esp_wifi.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
+
+// Your custom headers
 #include "BLEManager/BLEManager.h"
+#include "BLEOta.h"
 
 // --- Constants ---
 #define BUTTON_PIN 0
@@ -25,12 +28,14 @@
 MAX17048 fuelGauge; 
 LSM6DS3Core myIMU(I2C_MODE, 0x6A);
 BLEManager bleManager;
+BLEOta myOta; 
 
 // --- Global Variables ---
 bool isButtonPressed = false;
 unsigned long buttonPressTime = 0;
 unsigned long lastBlinkTime = 0; 
 int ledState = LOW;
+bool otaMaintenanceMode = false; 
 
 std::vector<DataPoint> listA; 
 std::vector<DataPoint> listB; 
@@ -41,7 +46,6 @@ uint8_t lastBatteryLevel = 0;
 // --- Functions ---
 void initI2C() {
     Wire.begin(I2C_SDA, I2C_SCL);
-    // Start slow for safety
     fuelGauge.attach(Wire);
 }
 
@@ -64,8 +68,6 @@ void handleLEDStatus() {
 }
 
 void setup() {
-    // printf uses standard serial, ensure monitor is 115200
-    // Serial.begin(115200); // Optional if platformio.ini is set correctly
     delay(1000); 
 
     pinMode(LED_PIN, OUTPUT);
@@ -80,9 +82,14 @@ void setup() {
 
     setCpuFrequencyMhz(80);
     esp_wifi_stop();
-    btStop();
+    btStop(); 
 
-    bleManager.initBLE("ESP32_BT");
+    // 1. Init BLE
+    bleManager.initBLE("Smasher");
+
+    // 2. Attach OTA Service
+    myOta.begin(bleManager.getNimBLEServer());
+    
     bleManager.startAdvertising();
     delay(500);
 
@@ -90,7 +97,7 @@ void setup() {
         printf("IMU init error\n");
     }
 
-    // ⚡ SWITCH TO FAST I2C NOW
+    // SWITCH TO FAST I2C NOW
     Wire.setClock(400000); 
 
     myIMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, LSM6DS3_ACC_GYRO_FS_XL_16g | LSM6DS3_ACC_GYRO_ODR_XL_833Hz);
@@ -105,6 +112,21 @@ void setup() {
 }
 
 void loop() {
+    // --- OTA PRIORITY LOGIC ---
+    if (Update.isRunning() || otaMaintenanceMode) {
+        digitalWrite(LED_PIN, (millis() / 100) % 2); // Fast OTA blink
+        return;
+    } 
+    
+    // Check for Manual OTA Trigger via Command
+    if (bleManager.isOtaRequested()) {
+        printf("OTA Command Received. Pausing sensors...\n");
+        bleManager.setOtaRequested(false);
+        otaMaintenanceMode = true; 
+        return;
+    }
+
+    // --- NORMAL SENSOR LOGIC ---
     static unsigned long lastMicros = 0;
     unsigned long currentMicros = micros();
     unsigned long currentTime = millis();
@@ -140,10 +162,9 @@ void loop() {
     // --- SAMPLING LOGIC ---
     if (bleManager.isConnected()) {
         
-        // 🟢 Check the flag set by the callback
+        // Check the flag set by the callback
         if (bleManager.isSamplingEnabled()) {
             
-            // Only print occasionally to avoid flooding console
             static long lastPrint = 0;
             if (millis() - lastPrint > 1000) {
                 printf("Sampling Active... Buffer A: %d\n", listA.size());
@@ -161,7 +182,6 @@ void loop() {
                 }
 
                 if (isThresholdDetected) {
-                     // ... (Post-Trigger Logic) ...
                      listB.push_back(dp);
                      
                      if (listB.size() >= BUFFER_LIMIT) {    
@@ -178,7 +198,6 @@ void loop() {
                         listA.reserve(BUFFER_LIMIT); listB.reserve(BUFFER_LIMIT);
                      }
                 } else {
-                    // ... (Pre-Trigger Logic) ...
                     if (listA.size() >= BUFFER_LIMIT) {
                          // Threshold check logic...
                          if((dp.accel[0] < -1000 || dp.accel[0] > 1000) && (dp.accel[1] > 6000 || dp.accel[1] < -6000) && (dp.accel[2] > 150 || dp.accel[2] < -150)) {
@@ -204,7 +223,7 @@ void loop() {
         
         // --- Battery Logic (Always runs when connected) ---
         static unsigned long lastBatCheck = 0;
-        if (currentTime - lastBatCheck > 5000) { // Check every 5s
+        if (currentTime - lastBatCheck > 5000) { 
             lastBatCheck = currentTime;
             uint8_t newLevel = readBatteryPercentage();
             if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
@@ -212,6 +231,5 @@ void loop() {
                 lastBatteryLevel = newLevel;
             }
         }
-
     } 
 }

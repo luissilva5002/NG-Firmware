@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <vector>
-#include "BLEDevice.h"
+#include <NimBLEDevice.h>
 
 // Struct for accelerometer + gyro data
 struct DataPoint {
@@ -20,29 +20,38 @@ public:
     void sendBattery(uint8_t batteryLevel);
     void sendSensorData(std::vector<DataPoint>& data);
     
-    bool isAdvertising() const { return advertising; }
+    // Status Getters
+    bool isAdvertising() const { return _advertising; }
+    
+    // Logic Flags (Required for main.cpp)
     bool isSamplingEnabled() const { return _samplingEnabled; }
     void setSamplingEnabled(bool state) { _samplingEnabled = state; }
+    
+    bool isOtaRequested() const { return _otaRequested; }
+    void setOtaRequested(bool state) { _otaRequested = state; }
+
+    // Helper for OTA Class
+    NimBLEServer* getNimBLEServer() { return pServer; }
 
 private:
-    BLEServer* pServer;
-    BLEService* pService;
-    BLECharacteristic* pCharacteristic;
-    bool advertising;
+    NimBLEServer* pServer;
+    NimBLEService* pService;
+    NimBLECharacteristic* pCharacteristic;
     
-    // Flag to control the sampling loop
-    bool _samplingEnabled = false; 
+    bool _advertising;
+    bool _samplingEnabled;
+    bool _otaRequested;
 
-    class MyServerCallbacks : public BLEServerCallbacks {
-        void onConnect(BLEServer* pServer) override;
-        void onDisconnect(BLEServer* pServer) override;
+    // Callbacks
+    class MyServerCallbacks : public NimBLEServerCallbacks {
+        void onConnect(NimBLEServer* pServer) override;
+        void onDisconnect(NimBLEServer* pServer) override;
     };
 
-    // --- NEW: Callback for writing (Receiving commands from App) ---
-    class MyCallbacks : public BLECharacteristicCallbacks {
+    class MyCallbacks : public NimBLECharacteristicCallbacks {
     public:
-        MyCallbacks(BLEManager* manager) : pManager(manager) {}
-        void onWrite(BLECharacteristic* pCharacteristic) override;
+        MyCallbacks(BLEManager* m) : pManager(m) {}
+        void onWrite(NimBLECharacteristic* pCharacteristic) override;
     private:
         BLEManager* pManager;
     };
