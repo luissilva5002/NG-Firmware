@@ -71,21 +71,41 @@ void BLEManager::sendBattery(uint8_t batteryLevel) {
 void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
     if (!pCharacteristic || !isConnected()) return;
 
-    // Batching logic preserved
-    while (!data.empty()) {
-        size_t batchSize = std::min(data.size(), size_t(20)); // Adjust based on MTU 256
+    size_t totalPoints = data.size();
+    size_t processed = 0;
+
+    // Process the vector in batches
+    while (processed < totalPoints) {
+        
+        // 1. Determine Batch Size (Keep it safe at 15)
+        size_t remaining = totalPoints - processed;
+        size_t batchSize = std::min(remaining, size_t(15)); 
+
+        // 2. Prepare the Payload
         std::vector<int16_t> batch;
         batch.reserve(batchSize * 6);
 
         for (size_t i = 0; i < batchSize; i++) {
-            batch.insert(batch.end(), std::begin(data[i].accel), std::end(data[i].accel));
-            batch.insert(batch.end(), std::begin(data[i].gyro), std::end(data[i].gyro));
+            batch.insert(batch.end(), std::begin(data[processed + i].accel), std::end(data[processed + i].accel));
+            batch.insert(batch.end(), std::begin(data[processed + i].gyro), std::end(data[processed + i].gyro));
         }
 
+        // 3. Send Notification
+        // In v1.4.1, notify() is void. We rely on the delay below to ensure stability.
         pCharacteristic->setValue((uint8_t*)batch.data(), batch.size() * sizeof(int16_t));
-        pCharacteristic->notify();
-        data.erase(data.begin(), data.begin() + batchSize);
+        pCharacteristic->notify(); 
+        
+        // 4. Critical Flow Control
+        // Increment our progress
+        processed += batchSize;
+
+        // Wait 15ms to let the radio transmit the packet. 
+        // Without this, the ESP32 floods the buffer and packets get dropped.
+        delay(15); 
     }
+    
+    // Clear the original vector now that we have sent everything
+    data.clear();
 }
   
 // ---------------- Server Callbacks ----------------
