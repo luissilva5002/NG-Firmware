@@ -43,7 +43,6 @@ void BLEManager::stopAdvertising() {
 void BLEManager::disconnect() {
     if (pServer && pServer->getConnectedCount() > 0) {
         // NimBLE allows disconnecting specific client, 0 usually implies first or all depending on implementation
-        // For simple server:
         pServer->disconnect(0); 
     }
 }
@@ -54,7 +53,6 @@ bool BLEManager::isConnected() {
 
 void BLEManager::sendBattery(uint8_t batteryLevel) {
     if (pCharacteristic) {
-        // Note: notify() in NimBLE can take pointer and size directly
         pCharacteristic->setValue(&batteryLevel, sizeof(batteryLevel));
         pCharacteristic->notify();
     }
@@ -65,7 +63,7 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
     printf("Sending sensor data (%d points)...\n", data.size());
 
     while (!data.empty()) {
-        size_t batchSize = std::min(data.size(), size_t(20));
+        size_t batchSize = std::min(data.size(), size_t(20)); // Max 20 points per packet
         std::vector<int16_t> batch;
         batch.reserve(batchSize * 6); // 6 int16s per datapoint
 
@@ -76,6 +74,11 @@ void BLEManager::sendSensorData(std::vector<DataPoint>& data) {
 
         pCharacteristic->setValue((uint8_t*)batch.data(), batch.size() * sizeof(int16_t));
         pCharacteristic->notify();
+
+        // ⚠️ CRITICAL FIX: Delay allows BLE stack to clear the buffer.
+        // Without this, packets > 10 will likely be dropped.
+        delay(20); 
+
         data.erase(data.begin(), data.begin() + batchSize);
     }
 }
@@ -88,7 +91,6 @@ void BLEManager::MyServerCallbacks::onConnect(NimBLEServer* pServer) {
 
 void BLEManager::MyServerCallbacks::onDisconnect(NimBLEServer* pServer) {
     printf("Device disconnected\n");
-    // Auto-restart advertising on disconnect is standard
     NimBLEDevice::startAdvertising();
 }
 

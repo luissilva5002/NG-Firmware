@@ -102,7 +102,6 @@ void DeviceController::enterDeepSleep() {
 }
 
 bool DeviceController::checkThreshold(const DataPoint& dp) {
-    printf("%d\n", dp.accel[0]);
     return (dp.accel[0] < TRIG_ACC_X_MIN || dp.accel[0] > TRIG_ACC_X_MAX) && 
            (dp.accel[1] > TRIG_ACC_Y_POS || dp.accel[1] < TRIG_ACC_Y_NEG);
 }
