@@ -1,0 +1,22 @@
+#pragma once
+#include <LSM6DS3.h> 
+
+// --- IMU Init Settings ---
+#define IMU_MODE I2C_MODE
+#define IMU_I2C_ADDR 0x6A
+
+// Accel: 16g, 104Hz, BW=100Hz
+// (Matches: LSM6DS3_ACC_GYRO_BW_XL_100Hz | LSM6DS3_ACC_GYRO_FS_XL_16g | LSM6DS3_ACC_GYRO_ODR_XL_104Hz)
+#define IMU_ACCEL_SETTINGS (LSM6DS3_ACC_GYRO_BW_XL_100Hz | LSM6DS3_ACC_GYRO_FS_XL_16g | LSM6DS3_ACC_GYRO_ODR_XL_104Hz)
+
+// Gyro: 2000dps, 104Hz
+// (Matches: LSM6DS3_ACC_GYRO_FS_G_2000dps | LSM6DS3_ACC_GYRO_ODR_G_104Hz)
+#define IMU_GYRO_SETTINGS  (LSM6DS3_ACC_GYRO_FS_G_2000dps | LSM6DS3_ACC_GYRO_ODR_G_104Hz)
+
+// --- Trigger Thresholds (Raw Values) ---
+#define TRIG_ACC_X_MIN -1000
+#define TRIG_ACC_X_MAX 1000
+#define TRIG_ACC_Y_POS 6000
+#define TRIG_ACC_Y_NEG -6000
+#define TRIG_ACC_Z_POS 150
+#define TRIG_ACC_Z_NEG -150
