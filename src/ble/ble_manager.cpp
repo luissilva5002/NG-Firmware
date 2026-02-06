@@ -41,9 +41,21 @@ void BLEManager::stopAdvertising() {
 }
 
 void BLEManager::disconnect() {
-    if (pServer && pServer->getConnectedCount() > 0) {
-        // NimBLE allows disconnecting specific client, 0 usually implies first or all depending on implementation
-        pServer->disconnect(0); 
+    if (pServer) {
+        // Get list of ALL currently connected client IDs
+        std::vector<uint16_t> peerIds = pServer->getPeerDevices();
+        
+        // If empty, we are already disconnected
+        if (peerIds.empty()) {
+            printf("No devices to disconnect.\n");
+            return;
+        }
+
+        // Disconnect every connected device found
+        for (uint16_t id : peerIds) {
+            printf("Force disconnecting Client ID: %d\n", id);
+            pServer->disconnect(id); 
+        }
     }
 }
 

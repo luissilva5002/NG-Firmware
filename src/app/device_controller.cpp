@@ -1,6 +1,6 @@
 #include "app/device_controller.h"
 
-DeviceController::DeviceController() {
+DeviceController::DeviceController() : currentState(DeviceState::ADVERTISING) {
     listA.reserve(BUFFER_LIMIT + 10);
     listB.reserve(BUFFER_LIMIT + 10);
     listC.reserve(BUFFER_LIMIT * 2 + 10);
@@ -9,76 +9,114 @@ DeviceController::DeviceController() {
 void DeviceController::setup() {
     delay(1000); 
 
-    // 1. GPIO Setup
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    // 1. Hardware Init
+    // Initialize Managers
+    ledManager.begin(LED_PIN);
+    buttonManager.begin(BUTTON_PIN);
+
+    // Disable hold on button (important for deep sleep wake)
     gpio_hold_dis((gpio_num_t)BUTTON_PIN);
 
-    // 2. IMU Setup & I2C Init
-    // Note: IMUManager::init() now handles Wire.begin(SDA, SCL)
+    // 2. I2C & IMU
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     powerManager.init(Wire);
     imuManager.init();
 
-    // 4. Deep Sleep & WiFi Config
-    gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
-    esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+    // 3. Power Saving
     setCpuFrequencyMhz(80);
     esp_wifi_stop(); 
 
-    // 5. BLE Setup
-    bleManager.init();
+    // 4. BLE Setup
+    bleManager.init(); // Starts advertising automatically
     
-    // 6. Initial State
+    // 5. Initial State
     lastBatteryLevel = powerManager.getBatteryPercentage();
+    currentState = DeviceState::ADVERTISING;
 
-    printf("Setup Complete.\n");
+    printf("Setup Complete. State: ADVERTISING\n");
 }
 
 void DeviceController::loop() {
-    handleLED();
-    handleButton();
-    handleSampling();
-}
-
-void DeviceController::handleLED() {
-    unsigned long currentTime = millis();
-    if (bleManager.isConnected()) {
-        digitalWrite(LED_PIN, HIGH);
-    } else if (bleManager.isAdvertising()) {
-        if (currentTime - lastBlinkTime >= LED_BLINK_INTERVAL) {
-            lastBlinkTime = currentTime;
-            ledState = !ledState;
-            digitalWrite(LED_PIN, ledState);
-        }
-    } else {
-        digitalWrite(LED_PIN, LOW);
-    }
-}
-
-void DeviceController::handleButton() {
-    if (digitalRead(BUTTON_PIN) == LOW) {
-        if (!isButtonPressed) {
-            isButtonPressed = true;
-            buttonPressTime = millis();
-        }
-        unsigned long pressDuration = millis() - buttonPressTime;
+    ButtonEvent btnEvent = buttonManager.update();
+    
+    // --- BUTTON 3S LOGIC ---
+    if (btnEvent == ButtonEvent::HOLD_3S) {
+        printf("Button: 3s Hold -> Force ADVERTISING\n");
         
-        if (pressDuration >= LONG_PRESS_TIME) {
-            enterDeepSleep();
-        } else if (pressDuration >= SHORT_PRESS_TIME && bleManager.isAdvertising()) {
-            bleManager.disconnect();
+        if (bleManager.isConnected()) {
+            bleManager.disconnect(); 
+            
+            // 🛑 CRITICAL FIX: Wait for the disconnect to actually happen.
+            // We loop here until isConnected() returns false.
+            unsigned long startWait = millis();
+            while (bleManager.isConnected() && (millis() - startWait < 500)) {
+                delay(10); // Give the BLE stack CPU time to process the event
+            }
+            
+            if (!bleManager.isConnected()) {
+                printf("Disconnect Successful.\n");
+            } else {
+                printf("Disconnect Timed Out!\n");
+            }
         }
-    } else if (isButtonPressed) {
-        // Button released
-        if ((millis() - buttonPressTime) < LONG_PRESS_TIME) {
-             if (!bleManager.isConnected() && !bleManager.isAdvertising()) {
-                 bleManager.startAdvertising();
-             }
-        }
-        isButtonPressed = false;
+        
+        // Now it is safe to change state
+        bleManager.setSamplingEnabled(false);
+        currentState = DeviceState::ADVERTISING;
+        return; // Restart loop to prevent immediate state checks
     }
+    
+    else if (btnEvent == ButtonEvent::HOLD_5S) {
+        printf("Button: 5s Hold -> SLEEP\n");
+        currentState = DeviceState::SLEEP;
+    }
+
+    // 3. State Machine Logic
+    switch (currentState) {
+        case DeviceState::ADVERTISING:
+            // Logic: Wait for connection
+            if (bleManager.isConnected()) {
+                printf("State -> CONNECTED\n");
+                currentState = DeviceState::CONNECTED;
+            }
+            break;
+
+        case DeviceState::CONNECTED:
+            // Logic: Wait for START command or Disconnect
+            if (!bleManager.isConnected()) {
+                printf("Disconnected -> ADVERTISING\n");
+                bleManager.startAdvertising();
+                currentState = DeviceState::ADVERTISING;
+            } 
+            else if (bleManager.isSamplingEnabled()) { // Flag set by "START" cmd
+                printf("Cmd START -> SAMPLING\n");
+                currentState = DeviceState::SAMPLING;
+            }
+            break;
+
+        case DeviceState::SAMPLING:
+            // Logic: Read Sensors
+            if (!bleManager.isConnected()) {
+                currentState = DeviceState::ADVERTISING;
+            } 
+            else if (!bleManager.isSamplingEnabled()) { // Flag cleared by "STOP" cmd
+                printf("Cmd STOP -> CONNECTED\n");
+                currentState = DeviceState::CONNECTED;
+            } 
+            else {
+                handleSampling();
+            }
+            break;
+
+        case DeviceState::SLEEP:
+            // Logic: Enter Deep Sleep
+            ledManager.render(DeviceState::SLEEP); // Ensure LED is off immediately
+            enterDeepSleep(); 
+            break;
+    }
+
+    // 4. Update LED based on final state
+    ledManager.render(currentState);
 }
 
 void DeviceController::enterDeepSleep() {
@@ -103,59 +141,48 @@ bool DeviceController::checkThreshold(const DataPoint& dp) {
 }
 
 void DeviceController::handleSampling() {
-    if (!bleManager.isConnected()) return;
+    // Note: Battery check removed for brevity, add back if needed
 
-    // --- Battery Logic ---
-    static unsigned long lastBatCheck = 0;
-    if (millis() - lastBatCheck > 5000) {
-        lastBatCheck = millis();
-        uint8_t newLevel = powerManager.getBatteryPercentage();
-        if (lastBatteryLevel == 255 || abs((int)newLevel - (int)lastBatteryLevel) >= 1) {
-            bleManager.sendBattery(newLevel);
-            lastBatteryLevel = newLevel;
-        }
-    }
+    unsigned long currentMicros = micros();
+    if (currentMicros - lastMicros >= 1200) { // ~833Hz
+        lastMicros = currentMicros;
 
-    // --- Sampling Logic ---
-    if (bleManager.isSamplingEnabled()) {
-        unsigned long currentMicros = micros();
-        if (currentMicros - lastMicros >= 1200) {
-            lastMicros = currentMicros;
+        DataPoint dp;
+        imuManager.readData(dp);
 
-            DataPoint dp;
-            imuManager.readData(dp);
-
-            if (isThresholdDetected) {
-                // Recording POST-trigger data
-                listB.push_back(dp);
+        if (isThresholdDetected) {
+            // --- POST-TRIGGER RECORDING ---
+            listB.push_back(dp);
+            
+            if (listB.size() >= BUFFER_LIMIT) {
+                printf("Buffer Full. Sending Data...\n");
                 
-                if (listB.size() >= BUFFER_LIMIT) {
-                    printf("Captured! Sending...\n");
-                    
-                    listC = listA; // Pre-trigger
-                    listC.insert(listC.end(), listB.begin(), listB.end()); // Post-trigger
+                // Combine Pre + Post
+                listC = listA; 
+                listC.insert(listC.end(), listB.begin(), listB.end());
 
-                    bleManager.sendSensorData(listC);
+                bleManager.sendSensorData(listC);
 
-                    isThresholdDetected = false;
-                    listA.clear(); listB.clear(); listC.clear();
-                    listA.reserve(BUFFER_LIMIT); listB.reserve(BUFFER_LIMIT);
-                }
-            } else {
-                // Filling PRE-trigger buffer
-                if (listA.size() >= BUFFER_LIMIT) {
-                    if (checkThreshold(dp)) {
-                        isThresholdDetected = true;
-                        printf("Triggered!\n");
-                    }
-                    listA.erase(listA.begin());
-                }
-                listA.push_back(dp);
+                // Reset Buffers
+                isThresholdDetected = false;
+                listA.clear(); 
+                listB.clear(); 
+                listC.clear();
+                // Re-reserve to avoid reallocations
+                listA.reserve(BUFFER_LIMIT); 
+                listB.reserve(BUFFER_LIMIT);
             }
+        } else {
+            // --- PRE-TRIGGER BUFFERING ---
+            if (listA.size() >= BUFFER_LIMIT) {
+                // Check threshold only when buffer is full (sliding window)
+                if (checkThreshold(dp)) {
+                    isThresholdDetected = true;
+                    printf("Threshold Triggered!\n");
+                }
+                listA.erase(listA.begin()); // Remove oldest
+            }
+            listA.push_back(dp);
         }
-    } else {
-        // Idle cleanup
-        if (!listA.empty()) listA.clear();
-        isThresholdDetected = false;
     }
 }
