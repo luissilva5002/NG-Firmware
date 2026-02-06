@@ -17,13 +17,9 @@ void DeviceController::setup() {
 
     // 2. IMU Setup & I2C Init
     // Note: IMUManager::init() now handles Wire.begin(SDA, SCL)
-    if (!imuManager.init()) {
-        printf("IMU init error\n");
-    }
-
-    // 3. Power Setup
-    // Pass the now-initialized Wire instance to PowerManager
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     powerManager.init(Wire);
+    imuManager.init();
 
     // 4. Deep Sleep & WiFi Config
     gpio_wakeup_enable((gpio_num_t)BUTTON_PIN, GPIO_INTR_LOW_LEVEL);

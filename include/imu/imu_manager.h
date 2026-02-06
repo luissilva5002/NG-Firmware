@@ -9,7 +9,7 @@
 class IMUManager {
 public:
     IMUManager();
-    bool init(); 
+    bool init();
     void readData(DataPoint& dp);
 
 private:
