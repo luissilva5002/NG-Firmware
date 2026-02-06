@@ -2,7 +2,7 @@
 
 BLEManager::BLEManager() : pServer(nullptr), pService(nullptr), pCharacteristic(nullptr), advertising(true) {}
 
-void BLEManager::initBLE() {
+void BLEManager::init() {
     printf("Initializing NimBLE...\n");
     NimBLEDevice::init(BLE_DEVICE_NAME);
     // NimBLE handles MTU negotiation automatically mostly, but we can hint

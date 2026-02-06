@@ -9,7 +9,7 @@
 class BLEManager {
 public:
     BLEManager();
-    void initBLE();
+    void init();
     void startAdvertising();
     void stopAdvertising();
     void disconnect();

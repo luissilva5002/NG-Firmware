@@ -28,7 +28,7 @@ void DeviceController::setup() {
     esp_wifi_stop(); 
 
     // 5. BLE Setup
-    bleManager.initBLE();
+    bleManager.init();
     
     // 6. Initial State
     lastBatteryLevel = powerManager.getBatteryPercentage();
