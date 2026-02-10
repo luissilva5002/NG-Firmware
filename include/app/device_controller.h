@@ -11,6 +11,7 @@
 #include "driver/rtc_io.h"
 #include "esp_wifi.h"
 #include "esp_sleep.h"
+#include "ota/ota_manager.h"
 
 class DeviceController {
 public:
@@ -25,6 +26,7 @@ private:
     BLEManager bleManager;
     ButtonManager buttonManager; // New Manager
     LEDManager ledManager;       // New Manager
+    OTAManager otaManager;
 
     // State
     DeviceState currentState;
@@ -36,10 +38,12 @@ private:
 
     // Sampling Logic Variables
     bool isThresholdDetected = false;
+    unsigned long lastBatteryCheck = 0;
     uint8_t lastBatteryLevel = 0;
     unsigned long lastMicros = 0;
 
     // Private Methods
+    void checkBattery();
     void handleSampling();
     void enterDeepSleep();
     bool checkThreshold(const DataPoint& dp);

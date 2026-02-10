@@ -1,5 +1,10 @@
 #include "app/device_controller.h"
 
+// TODO: ACHO QUE O CHECK DA BATERIA PODE FAZER PARAR A THREAD POR UNS MOMENTOS ENQUANTO 
+// A EXECUÇÃO TODA DA FUNÇÃO NÃO ACAB. ISTO PODE FAZER COM QUE A MEDIÇÃO DOS DADOS
+// DO IMU (HANDLESAMPLING()) SEJA POSTA EM ESPERA E FALHE O MILLISEGUNDO EXATO EM 
+// QUE ERA SUPOSTO EFETUAR A MEDIÇÃO
+
 DeviceController::DeviceController() : currentState(DeviceState::ADVERTISING) {
     listA.reserve(BUFFER_LIMIT + 10);
     listB.reserve(BUFFER_LIMIT + 10);
@@ -7,6 +12,10 @@ DeviceController::DeviceController() : currentState(DeviceState::ADVERTISING) {
 }
 
 void DeviceController::setup() {
+    printf("================\n");
+    printf("Updated Firmware\n");
+    printf("================\n");
+
     delay(1000); 
 
     // 1. Hardware Init
@@ -26,8 +35,9 @@ void DeviceController::setup() {
     setCpuFrequencyMhz(80);
     esp_wifi_stop(); 
 
-    // 4. BLE Setup
-    bleManager.init(); // Starts advertising automatically
+    // 4. BLE Setup - Pass OTA Manager
+    otaManager.begin();
+    bleManager.init(&otaManager);
     
     // 5. Initial State
     lastBatteryLevel = powerManager.getBatteryPercentage();
@@ -37,6 +47,13 @@ void DeviceController::setup() {
 }
 
 void DeviceController::loop() {
+    // PRIORITY 1: Handle OTA
+    // If OTA is running, skip all other logic to prevent crashes/interruptions
+    if (otaManager.isOTAActive()) {
+        // Optional: Blink LED fast to indicate update
+        return; 
+    }
+
     ButtonEvent btnEvent = buttonManager.update();
     
     // --- BUTTON 3S LOGIC ---
@@ -46,8 +63,6 @@ void DeviceController::loop() {
         if (bleManager.isConnected()) {
             bleManager.disconnect(); 
             
-            // 🛑 CRITICAL FIX: Wait for the disconnect to actually happen.
-            // We loop here until isConnected() returns false.
             unsigned long startWait = millis();
             while (bleManager.isConnected() && (millis() - startWait < 500)) {
                 delay(10); // Give the BLE stack CPU time to process the event
@@ -65,7 +80,7 @@ void DeviceController::loop() {
         currentState = DeviceState::ADVERTISING;
         return; // Restart loop to prevent immediate state checks
     }
-    
+
     else if (btnEvent == ButtonEvent::HOLD_5S) {
         printf("Button: 5s Hold -> SLEEP\n");
         currentState = DeviceState::SLEEP;
@@ -82,6 +97,8 @@ void DeviceController::loop() {
             break;
 
         case DeviceState::CONNECTED:
+            checkBattery();
+
             // Logic: Wait for START command or Disconnect
             if (!bleManager.isConnected()) {
                 printf("Disconnected -> ADVERTISING\n");
@@ -95,6 +112,8 @@ void DeviceController::loop() {
             break;
 
         case DeviceState::SAMPLING:
+            checkBattery();
+
             // Logic: Read Sensors
             if (!bleManager.isConnected()) {
                 currentState = DeviceState::ADVERTISING;
@@ -141,7 +160,6 @@ bool DeviceController::checkThreshold(const DataPoint& dp) {
 }
 
 void DeviceController::handleSampling() {
-    // Note: Battery check removed for brevity, add back if needed
 
     unsigned long currentMicros = micros();
     if (currentMicros - lastMicros >= 1200) { // ~833Hz
@@ -184,5 +202,21 @@ void DeviceController::handleSampling() {
             }
             listA.push_back(dp);
         }
+    }
+}
+
+void DeviceController::checkBattery() {
+    // Check only every 10 seconds to avoid blocking the I2C bus during high-speed sampling
+    if (millis() - lastBatteryCheck < 10000) return;
+    lastBatteryCheck = millis();
+
+    uint8_t currentLevel = powerManager.getBatteryPercentage();
+
+    // Check if difference is >= 1%
+    if (abs(currentLevel - lastBatteryLevel) >= 1) {
+        printf("Battery Changed: %d%% -> %d%%\n", lastBatteryLevel, currentLevel);
+        
+        lastBatteryLevel = currentLevel;
+        bleManager.sendBattery(lastBatteryLevel);
     }
 }

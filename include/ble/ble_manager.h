@@ -5,11 +5,16 @@
 
 #include "shared_types.h"
 #include "config/config.h"
+#include "config/ble_config.h"
+#include "ota/ota_manager.h" //
 
 class BLEManager {
 public:
     BLEManager();
-    void init();
+    
+    // Updated init to accept OTA Manager
+    void init(OTAManager* otaManager); 
+    
     void startAdvertising();
     void stopAdvertising();
     void disconnect();
@@ -28,6 +33,13 @@ private:
     NimBLEServer* pServer;
     NimBLEService* pService;
     NimBLECharacteristic* pCharacteristic;
+    
+    // OTA References
+    OTAManager* otaManager;
+    NimBLEService* pOtaService;
+    NimBLECharacteristic* pOtaControlCharacteristic;
+    NimBLECharacteristic* pOtaDataCharacteristic;
+
     bool advertising;
     bool _samplingEnabled = false;
 
